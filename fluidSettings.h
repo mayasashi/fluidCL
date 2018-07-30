@@ -1,0 +1,6 @@
+#ifndef FLUIDSETTINGS
+#define FLUIDSETTINGS
+
+#define F_RES 512
+
+#endif /*FLUIDSETTINGS*/

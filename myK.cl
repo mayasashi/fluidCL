@@ -1,5 +1,5 @@
 
-#define RERES 256
+#define RERES 512
 #define RERE_S_DOUBLED 512
 #define F(AVR,i,j) AVR[(i)+RERES*(j)]
 #define G(AVR,i,j) AVR[(i)+RERE_S_DOUBLED*(j)]
@@ -106,14 +106,14 @@ void Boundary(int i,int j,global float *P,global float *U,global float *V){
         F(P,i,j) = F(P,i+1*(i==0)-1*(i==RERES-1),j+1*(j==0)-1*(j==RERES-1));
     }
 }
-kernel void AddForce(global float *Fx,global float *Fy,const float diffX, const float diffY, const float posX, const float posY, const float randNum, const float mou, const float stronger,const float size){
-    int n = get_global_id(0);
-    float siz = 0.0001*size*0.4;
-    float j = (float)(n/RERES);
-    float i = (float)(n%RERES);
-    
-    float hf = 1.0f*RERES;
-    float expF = (float)(stronger*exp(-(pow((float)(i-posX)/hf,2.0f)+pow((float)(j-posY)/hf,2.0f))/siz));
+kernel void AddForce(global float *Fx, global float *Fy, const float diffX, const float diffY, const float posX, const float posY, const int mou) {
+	size_t n = get_global_id(0);
+	float siz = 0.0001*0.4;
+	float j = (float)(n / RERES);
+	float i = (float)(n%RERES);
+
+	float hf = 1.0f*RERES;
+	float expF = (float)(10000.0f*exp(-(pow((float)(i - posX) / hf, 2.0f) + pow((float)(j + (-RERES+posY)) / hf, 2.0f)) / siz));
     float IntenseX = mou*diffX*expF;
     float IntenseY = -mou*diffY*expF;
     Fx[n] = IntenseX;
