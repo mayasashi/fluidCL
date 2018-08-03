@@ -1,5 +1,5 @@
 
-#define RERES 512
+#define RERES 256
 #define RERE_S_DOUBLED 512
 #define F(AVR,i,j) AVR[(i)+RERES*(j)]
 #define G(AVR,i,j) AVR[(i)+RERE_S_DOUBLED*(j)]
@@ -17,10 +17,10 @@ float e_2(float x,float x0,float y,float y0,float size){
 float e_4(float x,float x0,float y,float y0,float size){
     return exp(-(pown(x-x0,4)+pown(y-y0,4))/size);
 }
-void Poisson(int i,int j,global float *X,float a,float b,float c){
+void Poisson(int i,int j,global float *X,float a,float b,float c,global float *B,float flg){
     float pre = F(X,i,j);
     if(i > 0 && i < RERES-1 && j > 0 && j < RERES-1) {
-        pre = (F(X,i+1,j)+F(X,i-1,j)+F(X,i,j+1)+F(X,i,j-1)+a*b)/c;
+        pre = (F(X,i+1,j)*F(B,i+1,j)+F(X,i-1,j)*F(B,i-1,j)+F(X,i,j+1)*F(B,i,j+1)+F(X,i,j-1)*F(B,i,j-1)+flg*F(X,i,j)*(4.0f-F(B,i+1,j)-F(B,i-1,j)-F(B,i,j+1)-F(B,i,j-1))+a*b)/c;
     }
     barrier(CLK_GLOBAL_MEM_FENCE);
     F(X,i,j) = pre;
@@ -63,12 +63,12 @@ void Advection(int i,int j,global float *A,global float *UR,global float *VR,flo
     G(A,i,j) = A_interpolated;
     barrier(CLK_GLOBAL_MEM_FENCE);
 }
-void Diffusion(int i,int j,global float *U,global float *V,float d,float dt,float Re){
+void Diffusion(int i,int j,global float *U,global float *V,float d,float dt,float Re,global float *B){
     float U_before = F(U,i,j);
     float V_before = F(V,i,j);
     for (int ii = 0; ii < 5; ii++){
-        Poisson(i,j,U,pown(d,2)*Re/dt,U_before,4.0f+pown(d,2)*Re/dt);
-        Poisson(i,j,V,pown(d,2)*Re/dt,V_before,4.0f+pown(d,2)*Re/dt);
+        Poisson(i,j,U,pown(d,2)*Re/dt,U_before,4.0f+pown(d,2)*Re/dt,B,0.0f);
+        Poisson(i,j,V,pown(d,2)*Re/dt,V_before,4.0f+pown(d,2)*Re/dt,B,0.0f);
     }
 }
 void External_force(int i,int j,global float *U,global float *V,global float *Fx,global float *Fy,float dt){
@@ -79,18 +79,18 @@ void External_force(int i,int j,global float *U,global float *V,global float *Fx
     F(V,i,j) = V_before;
     barrier(CLK_GLOBAL_MEM_FENCE);
 }
-void Pressure(int i,int j,global float *P,global float *U,global float *V,float d){
-    float div_UV = (F(U,i+1,j)-F(U,i-1,j)+F(V,i,j+1)-F(V,i,j-1))/(2.0f*d);
-    for (int ii = 0; ii < 7; ii++){
-        Poisson(i,j,P,-pown(d,2),div_UV,4.0f);
+void Pressure(int i,int j,global float *P,global float *U,global float *V,float d,global float *B){
+    float div_UV = (F(U,i+1,j)*F(B,i+1,j)-F(U,i-1,j)*F(B,i-1,j)+F(V,i,j+1)*F(B,i,j+1)-F(V,i,j-1)*F(B,i,j-1))/(2.0f*d);
+    for (int ii = 0; ii < 10; ii++){
+        Poisson(i,j,P,-pown(d,2),div_UV,4.0f,B,1.0f);
     }
 }
-void update(int i,int j,global float *P,global float *U,global float *V,float d){
+void update(int i,int j,global float *P,global float *U,global float *V,float d,global float *B){
     float U_before = F(U,i,j);
     float V_before = F(V,i,j);
     if(i > 0 && i < RERES-1 && j > 0 && j < RERES-1){
-        U_before = F(U,i,j) - 1.0f*(F(P,i+1,j)-F(P,i-1,j))/(2.0f*d);
-        V_before = F(V,i,j) - 1.0f*(F(P,i,j+1)-F(P,i,j-1))/(2.0f*d);
+        U_before = F(U,i,j) - 1.0f*(F(P,i+1,j)*F(B,i+1,j)-F(P,i-1,j)*F(B,i-1,j)+(-F(B,i+1,j)+F(B,i-1,j))*F(P,i,j))/(2.0f*d);
+        V_before = F(V,i,j) - 1.0f*(F(P,i,j+1)*F(B,i,j+1)-F(P,i,j-1)*F(B,i,j-1)+(-F(B,i,j+1)+F(B,i,j-1))*F(P,i,j))/(2.0f*d);
     }
     barrier(CLK_GLOBAL_MEM_FENCE);
     //F(U,i,j) = U_before*0.999f;
@@ -106,6 +106,28 @@ void Boundary(int i,int j,global float *P,global float *U,global float *V){
         F(P,i,j) = F(P,i+1*(i==0)-1*(i==RERES-1),j+1*(j==0)-1*(j==RERES-1));
     }
 }
+
+kernel void makeBoundary(global float *B)
+{
+    int n = get_global_id(0);
+    int i = n%RERES;
+    int j = n/RERES;
+    float x = i*1.0f/RERES;
+    float y = j*1.0f/RERES;
+    
+    if(i <= 1 && i >= RERES - 2 && j <= 1 && j >= RERES - 2)
+    {
+        B[n] = 0.0f;
+    }
+    else if(pown(x-0.5f,2)+pown(y-0.5f,2) > 0.15f)
+    {
+        B[n] = 0.0f;
+    }
+    else{
+        B[n] = 1.0f;
+    }
+}
+
 kernel void AddForce(global float *Fx, global float *Fy, const float diffX, const float diffY, const float posX, const float posY, const int mou) {
 	size_t n = get_global_id(0);
 	float siz = 0.0001*0.4;
@@ -113,7 +135,7 @@ kernel void AddForce(global float *Fx, global float *Fy, const float diffX, cons
 	float i = (float)(n%RERES);
 
 	float hf = 1.0f*RERES;
-	float expF = (float)(10000.0f*exp(-(pow((float)(i - posX) / hf, 2.0f) + pow((float)(j + (-RERES+posY)) / hf, 2.0f)) / siz));
+	float expF = (float)(30000.0f*exp(-(pow((float)(i - posX) / hf, 2.0f) + pow((float)(j + (-RERES+posY)) / hf, 2.0f)) / siz));
     float IntenseX = mou*diffX*expF;
     float IntenseY = -mou*diffY*expF;
     Fx[n] = IntenseX;
@@ -130,15 +152,15 @@ kernel void drawCircle(global float *A,const float posX, const float posY, const
     bool is_incircle = (pown(x-x0,2)+pown(y-y0,2) < pown(size,2));
     G(A,i,j) = 0.998f*G(A,i,j) + 1.0f*strength*mou*is_incircle;
 }
-kernel void kernel_main(global float *P,global float *U,global float *V,global float *Fx,global float *Fy,const float d,const float dt,const float Re){
+kernel void kernel_main(global float *P,global float *U,global float *V,global float *Fx,global float *Fy,const float d,const float dt,const float Re,global float *B){
     int n = get_global_id(0);
     int i = n%RERES;
     int j = n/RERES;
     External_force(i,j,U,V,Fx,Fy,dt);
     Advection_SMI(i,j,U,V,dt,d);
-    Diffusion(i,j,U,V,d,dt,Re);
-    Pressure(i,j,P,U,V,d);
-    update(i,j,P,U,V,d);
+    Diffusion(i,j,U,V,d,dt,Re,B);
+    Pressure(i,j,P,U,V,d,B);
+    update(i,j,P,U,V,d,B);
     Boundary(i,j,P,U,V);
 }
 kernel void XY512Func(global float *UR,global float *VR,global float *U,global float *V){

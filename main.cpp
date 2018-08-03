@@ -13,12 +13,12 @@ extern void SimulateFluid(simpleCLhandler & cl,kernelHandler & hndl);
 
 int print()
 {
-	printf("-----------------------------------------\n");
+	/*printf("-----------------------------------------\n");
 	printf("-----------------------------------------\n");
 	printf("press any key to continue...\n\n");
 	char p[10];
 	fgets(p, 10, stdin);
-	printf("\n-----------------------------------------\n");
+	printf("\n-----------------------------------------\n");*/
 	printf("EXIT\n");
 	return 0;
 }
@@ -30,15 +30,21 @@ int main(int argc, const char **argv)
 	simpleCLhandler cl = simpleCL_init();
 
 	kernelHandler krnlhndl;
-
+#ifdef __APPLE__
+    krnlhndl.addKernelProgramFile("../../../src/fluidCL/myK.cl", "fluid", 1);
+#else
 	krnlhndl.addKernelProgramFile("..\\cudaproj\\src\\myK.cl", "fluid", 1);
+#endif
 	krnlhndl.loadProgramFile();
 	krnlhndl.buildProgram(cl);
 	krnlhndl.printProgramBuildInfo(cl);
 
 	float d = 1.0f / F_RES;
-	float dt = d / 5.0f;
+	float dt = d / 8.0f;
 	float Re = 3000;
+    
+    float clrendertexturecoef = 1.0f;
+    
 	double _mousePosX = 0;
 	double _mousePosY = 0;
 
@@ -57,12 +63,23 @@ int main(int argc, const char **argv)
 	cl_mem V = clCreateBuffer(cl->mainContext, CL_MEM_READ_WRITE, sizeof(float) * F_RES * F_RES, NULL, NULL);
 	cl_mem Fx = clCreateBuffer(cl->mainContext, CL_MEM_READ_WRITE, sizeof(float) * F_RES * F_RES, NULL, NULL);
 	cl_mem Fy = clCreateBuffer(cl->mainContext, CL_MEM_READ_WRITE, sizeof(float) * F_RES * F_RES, NULL, NULL);
+    cl_mem W =  clCreateBuffer(cl->mainContext, CL_MEM_READ_WRITE, sizeof(float) * F_RES * F_RES, NULL, NULL);
+    cl_mem CLRenderTexture = clCreateBuffer(cl->mainContext, CL_MEM_READ_WRITE, sizeof(cl_uchar)*F_RES * F_RES * 4, NULL, NULL);
+    
+    cl_mem B = clCreateBuffer(cl->mainContext, CL_MEM_READ_WRITE, sizeof(float)*F_RES*F_RES, NULL, NULL);
 
-	cl_kernel forcekernel = clCreateKernel(krnlhndl.getProgram(1), "AddForce", NULL);
-
+    cl_kernel boundarykernel = clCreateKernel(krnlhndl.getProgram(1), "makeBoundary", NULL);
+    cl_kernel forcekernel = clCreateKernel(krnlhndl.getProgram(1), "AddForce", NULL);
 	cl_kernel fluidkernel = clCreateKernel(krnlhndl.getProgram(1), "kernel_main", NULL);
+    cl_kernel vorticitykernel = clCreateKernel(krnlhndl.getProgram(1), "vorticity", NULL);
+    cl_kernel convertFloatUCharkernel = clCreateKernel(krnlhndl.getProgram(1), "convertFloatToUchar", NULL);
 
-	size_t global_work_size[1] = { F_RES * F_RES };
+    size_t global_work_size[1] = { F_RES * F_RES };
+    
+    clSetKernelArg(boundarykernel, 0, sizeof(cl_mem), &B);
+    clEnqueueNDRangeKernel(cl->mainQueue, boundarykernel, 1, NULL, global_work_size, NULL, 0, NULL, NULL);
+
+    
 
 	GLcommon gl;
 
@@ -89,8 +106,14 @@ int main(int argc, const char **argv)
 	gl.VBO_StoreData(2, 2, 4, GL_FLOAT, GL_STATIC_DRAW, GL_FALSE, 0, sizeof(float) * 2 * 4, uvData);
 
 	gl.Program_Create(1, "program");
-	gl.Shader_Create(1, "vertex", GL_VERTEX_SHADER, "..\\cudaproj\\src\\001.vs");
-	gl.Shader_Create(2, "fragment", GL_FRAGMENT_SHADER, "..\\cudaproj\\src\\001.fs");
+#ifdef __APPLE__
+    gl.Shader_Create(1, "vertex", GL_VERTEX_SHADER, "../../../src/fluidCL/001.vs");
+    gl.Shader_Create(2, "fragment", GL_FRAGMENT_SHADER, "../../../src/fluidCL/001.fs");
+    
+#else
+    gl.Shader_Create(1, "vertex", GL_VERTEX_SHADER, "..\\cudaproj\\src\\001.vs");
+    gl.Shader_Create(2, "fragment", GL_FRAGMENT_SHADER, "..\\cudaproj\\src\\001.fs");
+#endif
 	gl.Program_AttachShader(1, 1);
 	gl.Program_AttachShader(1, 2);
 	gl.Shader_AddAttribLocation(1, "pos", 0);
@@ -115,7 +138,7 @@ int main(int argc, const char **argv)
 	gl.Program_USE(1, [&]() {
 		glUniform1i(glGetUniformLocation(gl.getProgram(1), "tex"), 1);
 	});
-
+    
 	gl.Draw([&]() {
 
 		mousePosX_previous = mousePosX;
@@ -147,9 +170,23 @@ int main(int argc, const char **argv)
 		clSetKernelArg(fluidkernel, 5, sizeof(cl_float), &d);
 		clSetKernelArg(fluidkernel, 6, sizeof(cl_float), &dt);
 		clSetKernelArg(fluidkernel, 7, sizeof(cl_float), &Re);
+        clSetKernelArg(fluidkernel, 8, sizeof(cl_mem), &B);
 		clEnqueueNDRangeKernel(cl->mainQueue, fluidkernel, 1, NULL, global_work_size, NULL, 0, NULL, NULL);
+        
+        clSetKernelArg(vorticitykernel, 0, sizeof(cl_mem), &U);
+        clSetKernelArg(vorticitykernel, 1, sizeof(cl_mem), &V);
+        clSetKernelArg(vorticitykernel, 2, sizeof(cl_mem), &W);
+        clSetKernelArg(vorticitykernel, 3, sizeof(cl_float), &d);
+        clEnqueueNDRangeKernel(cl->mainQueue, vorticitykernel, 1, NULL, global_work_size, NULL, 0, NULL, NULL);
 
-		clEnqueueReadBuffer(cl->mainQueue, P, CL_FALSE, 0, sizeof(float)*F_RES*F_RES, colorTexHstPtr, 0, NULL, NULL);
+        clSetKernelArg(convertFloatUCharkernel, 0, sizeof(cl_mem), &W);
+        clSetKernelArg(convertFloatUCharkernel, 1, sizeof(cl_mem), &CLRenderTexture);
+        clSetKernelArg(convertFloatUCharkernel, 2, sizeof(cl_float), &clrendertexturecoef);
+        clEnqueueNDRangeKernel(cl->mainQueue, convertFloatUCharkernel, 1, NULL, global_work_size, NULL, 0, NULL, NULL);
+        
+        
+		clEnqueueReadBuffer(cl->mainQueue, CLRenderTexture, CL_FALSE, 0, sizeof(cl_uchar)*F_RES*F_RES * 4, colorTexHstPtr, 0, NULL, NULL);
+        //clEnqueueReadBuffer(cl->mainQueue, B, CL_FALSE, 0, sizeof(cl_uchar)*F_RES*F_RES * 4, colorTexHstPtr, 0, NULL, NULL);
 		
 		gl.Texture_Rewrite(1, colorTexHstPtr);
 
@@ -173,6 +210,9 @@ int main(int argc, const char **argv)
 	clReleaseMemObject(V);
 	clReleaseMemObject(Fx);
 	clReleaseMemObject(Fy);
+    clReleaseMemObject(W);
+    clReleaseMemObject(B);
+    clReleaseMemObject(CLRenderTexture);
 
 
 	simpleCL_close(cl);
